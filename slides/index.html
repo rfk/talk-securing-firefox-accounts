@@ -1,0 +1,777 @@
+﻿<html>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1">
+  <meta name="viewport" content="width=1024, user-scalable=no">
+
+  <title>Securing Firefox Accounts</title>
+
+  <link rel="stylesheet" media="screen" href="deck.js/core/deck.core.css">
+  <link rel="stylesheet" media="screen" href="deck.js/themes/mozilla/sandstone.default.css">
+
+  <script src="deck.js/modernizr.custom.js"></script>
+  <script src="deck.js/jquery.min.js"></script>
+  <script src="deck.js/core/deck.core.js"></script>
+
+  <style>
+  body {
+    overflow: hidden;
+  }
+  .deck-container .slide {
+    font-size: 1.3em;
+    padding: 1em;
+    padding-top: 0.6em;
+    border: none;
+  }
+  .deck-container .slide h1 {
+    font-size: 2.5em;
+    text-align: center;
+  }
+  .deck-container .slide h1 .h1sub {
+    font-size: 0.5em;
+  }
+  .deck-container .slide h2 {
+    padding-left: 1.3em;
+  }
+  .deck-container .slide blockquote {
+    font-size: 1em;
+  }
+  .deck-container .slide table {
+    font-size: 1em;
+  }
+  .deck-container .slide td {
+    padding: 1em;
+    padding-top: 0.4em;
+    padding-bottom: 0.4em;
+  }
+  .deck-container .slide .code {
+    margin-left: 4em;
+  }
+  .deck-container .slide .highlight {
+    color: red;
+  }
+
+  .fullscreener {
+    position: absolute;
+    top: 0px;
+    left: 0px;
+    background: white;
+    height: 10px;
+    width: 10px;
+    opacity: 0.1;
+  }
+  .run-timer {
+    position: absolute;
+    top: 0px;
+    right: 0px;
+    background: black;
+    height: 5px;
+    width: 10px;
+    opacity: 0.5;
+  }
+  .run-timer-slow-down {
+    background: aqua;
+  }
+  .run-timer-on-track {
+    background: green;
+  }
+  .run-timer-move-on {
+    background: orange;
+  }
+  .run-timer-hurry-up {
+    background: red;
+  }
+
+  .deck-container > .slide {
+    page-break-after: always;
+  }
+  .screenshot {
+    border: 2px solid grey;
+    overflow: scroll;
+  }
+
+  ul {
+    padding-left: 4em;
+  }
+
+  div.reference-link {
+    text-align: center;
+  }
+
+  div.reference-link a {
+    font-size: 0.8em;
+  }
+
+  div.reference-link img {
+    margin-top: 0.5em;
+    border: 2px solid grey;
+  }
+  </style>
+
+<script>
+  $(function() {
+    $.deck('.slide');
+    // Preload all images to reduce display jank
+    $('img').each(function(i, elem) {
+      var img = new Image();
+      img.src = $(elem).attr('src');
+    });
+    // Enable full-screen mode by clicking on a button.
+    $('.fullscreener').each(function(i, elem) {
+      $(elem).bind("click", function() {
+        document.body.mozRequestFullScreen();
+        $('.fullscreener').hide();
+      });
+    });
+    $(document).bind("mozfullscreenchange", function(evt) {
+      $(".fullscreener").appendTo($.deck("getSlide"));
+      if (document.mozFullScreenElement) {
+        $(".fullscreener").hide()
+      } else {
+        $(".fullscreener").show()
+      }
+    });
+    // Add ability to run callbacks on individual slides
+    var onEnterSlideCallbacks = {}
+    window.onEnterSlide = function(selector, cb) {
+      var slide_id = $(selector).attr("id");
+      if(typeof onEnterSlideCallbacks[slide_id] === "undefined") {
+          onEnterSlideCallbacks[slide_id] = [];
+      }
+      onEnterSlideCallbacks[slide_id].push(cb)
+    }
+
+    // Add logic for managing the run timer, fullscreener, etc.
+
+    var $slide = null;
+    var $allSlides = $(".slide");
+    var talkStartTime = null;
+
+    $(document).bind("deck.change", function(event, from, to) {
+      $slide = $.deck("getSlide", to);
+      var slide_id = $slide.attr("id");
+      var callbacks = onEnterSlideCallbacks[slide_id];
+      if(typeof callbacks !== "undefined") {
+        for(var i=0; i<callbacks.length; i++) {
+          callbacks[i]();
+        }
+      }
+      $(".fullscreener").appendTo($slide)
+      updateRunTimer()
+    })
+
+    function updateRunTimer() {
+      // Clear previous status, if any.
+      var $runTimer = $(".run-timer")
+      $runTimer.removeClass("run-timer-slow-down")
+      $runTimer.removeClass("run-timer-on-track")
+      $runTimer.removeClass("run-timer-move-on")
+      $runTimer.removeClass("run-timer-hurry-up")
+      // Find the index of the current slide, the slow-but-simple way.
+      if ($slide && $slide.length) {
+        var curpos = 0
+        while (curpos < $allSlides.length) {
+          if ($allSlides[curpos] === $slide[0]) {
+            break
+          }
+          curpos += 1
+        }
+        // Find the previous slide with waypoint set; this is the min runtime.
+        i = curpos - 1
+        var runTimeMin = $slide.attr("run-time-waypoint")
+        while (runTimeMin === undefined && i >= 0) {
+          runTimeMin = $allSlides.eq(i).attr("run-time-waypoint")
+          i -= 1
+        }
+        // Find the next slide with waypoint set; this is the max runtime.
+        runTimeMax = undefined
+        i = curpos + 1
+        while (runTimeMax === undefined && i < $allSlides.length) {
+          runTimeMax = $allSlides.eq(i).attr("run-time-waypoint")
+          i += 1
+        }
+        // Tweak status of runtime tracker accordingly.
+        // If we're on the first slide we reset to zero, otherwise we
+        // adjust its class based on where we are in the runtime bound.
+        if ($slide[0] === $allSlides[0]) {
+          talkStartTime = null
+        } else {
+          if (talkStartTime === null) {
+            talkStartTime = Date.now()
+          }
+          runTime = (Date.now() - talkStartTime) / 1000;
+          runTimeMin = parseRunTimeWaypoint(runTimeMin);
+          runTimeMax = parseRunTimeWaypoint(runTimeMax);
+          if (runTimeMin && runTime < runTimeMin) {
+            $runTimer.addClass("run-timer-slow-down")
+          } else if (runTimeMax && runTime >= runTimeMax) {
+            $runTimer.addClass("run-timer-hurry-up")
+          } else if (runTimeMax && runTime >= runTimeMax - 20) {
+            $runTimer.addClass("run-timer-move-on")
+          } else {
+            $runTimer.addClass("run-timer-on-track")
+          }
+        }
+      }
+    }
+
+    function parseRunTimeWaypoint(waypoint) {
+      var mins, secs
+      waypoint = (waypoint || "").trim()
+      if (waypoint.indexOf("m") >= 0) {
+        var bits = waypoint.split("m")
+        mins = bits[0]
+        secs = bits[1]
+      } else {
+        mins = ""
+        secs = waypoint
+      }
+      return parseInt(secs || "0", 10) + (parseInt(mins || "0", 10) * 60)
+    }
+    window.parseRunTimeWaypoint = parseRunTimeWaypoint
+
+    // Sanity checks.
+    if (parseRunTimeWaypoint("0") !== 0) throw new Error();
+    if (parseRunTimeWaypoint("01m05") !== 65) throw new Error();
+    if (parseRunTimeWaypoint("2m12") !== 132) throw new Error();
+    if (parseRunTimeWaypoint("15m") !== 900) throw new Error();
+    if (parseRunTimeWaypoint("180") !== 180) throw new Error();
+    var runTimes = []
+    for (var i = 0; i < $allSlides.length; i++) {
+      var rt = $allSlides.eq(i).attr("run-time-waypoint")
+      if (rt !== undefined) {
+        runTimes.push(parseRunTimeWaypoint(rt))
+      }
+    }
+    if (runTimes[0] !== 0) {
+      throw new Error("timers dont start at zero")
+    }
+    if (runTimes[runTimes.length - 1] != 25 * 60) {
+      throw new Error("timers dont end at 25m")
+    }
+    for (var i = 1; i < runTimes.length; i++) {
+      if (runTimes[i] <= runTimes[i - 1]) {
+        throw new Error("time decrease at " + i)
+      }
+    }
+
+    setInterval(updateRunTimer, 5 * 1000)
+
+  });
+</script>
+
+</head>
+<body>
+<div class="deck-container">
+
+  <div class="run-timer"></div>
+
+  <section class="slide" style="text-align: center">
+  <div class="fullscreener">&nbsp;</div>
+  <h1>Securing Firefox Accounts</h1>
+  <h2>Incidents Survived & Lessons Learned</h1>
+  <p>Ryan Kelly<br />rfkelly@mozilla.com<br/><br/>@rfkelly</p>
+  </section>
+
+  <section class="slide" style="text-align: center" run-time-waypoint="0">
+  <h1>Securing Firefox Accounts</h1>
+  <h2>Incidents Survived & Lessons Learned</h1>
+  <p>Ryan Kelly<br />rfkelly@mozilla.com<br/><br/>@rfkelly</p>
+  </section>
+
+  <section class="slide">
+  <h1>Firefox</h1>
+  <div style="text-align: center">
+  <img src="./img/firefox_logo-only_RGB.png" style="height: 300px; width:319" />
+  </div>
+  </section>
+
+  <section class="slide">
+  <h2>I am...</h2>
+  <ul>
+  <li>Engineering lead for Firefox Accounts</li>
+  <li>A Unimelb alumnus!</li>
+  <li>A security enthusiast</li>
+  </ul>
+  </section>
+
+  <section class="slide">
+  <h2>I am...</h2>
+  <ul>
+  <li>Engineering lead for Firefox Accounts</li>
+  <li>A Unimelb alumnus!</li>
+  <li>A security enthusiast</li>
+  </ul>
+  <h2>I am not...</h2>
+  <ul>
+  <li>A security expert</li>
+  <li>A lecturer</li>
+  </ul>
+  </section>
+
+  <section class="slide">
+  <h2>Conversation Topics</h2>
+  <ul>
+  <li>What is Firefox Accounts?</li>
+  <li>How do we keep it secure?</li>
+  <li>How has that worked in practice?</li>
+  <li>Try to hack me 😃</li>
+  </ul>
+  </section>
+
+  <section class="slide" run-time-waypoint="3m">
+  <h1>Firefox Accounts</h1>
+  </section>
+
+  <section class="slide">
+  <h1 style="margin-bottom: 0">Firefox Accounts</h1>
+  <div style="text-align: center">
+  <table style="width: 100%"><tr><td style="width: 30%"></td><td style="text-align: center; padding: 0">
+    <img src="./img/firefox_logo-only_RGB.png" style="height: 300px; width:319px" />
+  </td><td style="text-align: center; padding: 0">
+    <h1>⬌</h1>
+  </td><td style="width: 40%; text-align: center; padding: 0">
+    <img src="./img/firefox_logo-only_RGB.png" style="height: 300px; width:319px" />
+  </td><td style="width: 30%"></td></tr></table>
+  <p>"Securely syncing your browser data since 2014"</p>
+  </div>
+  </section>
+
+  <section class="slide">
+  <br/><br/>
+  <h1>(demo)</h1>
+  </section>
+
+  <section class="slide">
+  <h2>Firefox Accounts</h2>
+  <ul>
+  <li>Uses email &amp; password to produce encryption keys</li>
+  <li>Browser encrypts data locally</li>
+  <li>Encrypted data stored in The Cloud</li>
+  </ul>
+  </section>
+
+  <section class="slide">
+  <h2>Firefox Accounts</h2>
+  <ul>
+  <li>Uses email &amp; password to produce encryption keys</li>
+  <li>Browser encrypts data locally</li>
+  <li>Encrypted data stored in The Cloud</li>
+  </ul>
+  <ul>
+  <li>Also, delegated auth for other services</li>
+  </ul>
+  </section>
+
+  <section class="slide" run-time-waypoint="5m">
+  <h1>Is it Secure?</h1>
+  </section>
+
+  <section class="slide">
+  <h1>"Security isn't a product, it's a process"</h1>
+  </section>
+
+  <section class="slide">
+  <h1>"Security isn't a product, it's a process"</h1>
+  <h2 style="text-align: center">
+  <p>It's also an onion...</p></h2>
+  </section>
+
+  <section class="slide">
+  <br />
+  <div style="text-align: center">
+  <img src="./img/onion.png" style="height: 15em; width: 15em" />
+  </div>
+  </section>
+
+  <!--  -->
+
+  <section class="slide">
+  <h1>Design</h1>
+  </section>
+
+  <section class="slide">
+  <h1>Design</h1>
+  <ul>
+  <li>Threat model</li>
+  <li>Cryptography</li>
+  <li>System Architecture</li>
+  <li>User experience tradeoffs</li>
+  </ul>
+  </section>
+
+  <section class="slide">
+  <h2>The "onepw" Protocol</h2>
+  <div class="reference-link">
+    <a href="https://github.com/mozilla/fxa-auth-server/wiki/onepw-protocol">https://github.com/mozilla/fxa-auth-server/wiki/onepw-protocol</a>
+    <img src="./img/onepw-create.png" style="width: 25em;" />
+  </div>
+  </section>
+
+  <section class="slide">
+  <h2>The "onepw" Protocol</h2>
+  <div class="reference-link">
+    <a href="https://github.com/mozilla/fxa-auth-server/wiki/onepw-protocol">https://github.com/mozilla/fxa-auth-server/wiki/onepw-protocol</a>
+    <img src="./img/onepw-keys.png" style="width: 20em;" />
+  </div>
+  </section>
+
+  <section class="slide">
+  <h2>The "onepw" Protocol</h2>
+  <div class="reference-link">
+    <a href="https://github.com/mozilla/fxa-auth-server/wiki/onepw-protocol">https://github.com/mozilla/fxa-auth-server/wiki/onepw-protocol</a>
+    <img src="./img/onepw-security-analysis.png" style="width: 25em;" />
+  </div>
+  </section>
+
+  <section class="slide">
+  <h1>Development</h1>
+  </section>
+
+  <section class="slide">
+  <h1>Development</h1>
+  <ul>
+  <li>Security Reviews</li>
+  <li>Security-conscious tools</li>
+  <li>Automated linting and scans</li>
+  <li>Developer Education</li>
+  </ul>
+  </section>
+
+  <!--  -->
+
+  <section class="slide">
+  <h1>Defense</h1>
+  </section>
+
+  <section class="slide">
+  <h1>Defense</h1>
+  <ul>
+  <li>Access Controls</li>
+  <li>Process Separation</li>
+  <li>Rate-limiting</li>
+  <li>Anomaly detection</li>
+  </ul>
+  </section>
+
+  <!--  -->
+
+  <section class="slide" run-time-waypoint="10m">
+  <h1>Offense</h1>
+  <ul>
+  <li>Bug Bounty Program</li>
+  <li>Security audits and pentests</li>
+  <li>Real Life Bad Guys</li>
+  </ul>
+  </section>
+
+  <section class="slide">
+  <h2>Bug Bounty</h2>
+  <div class="reference-link">
+    <a href="https://www.mozilla.org/en-US/security/web-bug-bounty/">https://www.mozilla.org/en-US/security/web-bug-bounty/</a>
+    <img src="./img/bug-bounty.png" style="width: 25em;" />
+  </div>
+  </section>
+
+  <section class="slide">
+  <h2>Security Audit</h2>
+  <div class="reference-link">
+    <a href="https://blog.mozilla.org/security/2017/07/18/web-service-audits-firefox-accounts/">https://blog.mozilla.org/security/2017/07/18/web-service-audits-firefox-accounts/</a>
+    <img src="./img/security-audit.png" style="width: 20em;" />
+  </div>
+  </section>
+
+  <section class="slide">
+  <h2>Security Audit</h2>
+  <div class="reference-link">
+    <a href="https://blog.mozilla.org/security/2017/07/18/web-service-audits-firefox-accounts/">https://blog.mozilla.org/security/2017/07/18/web-service-audits-firefox-accounts/</a>
+    <img src="./img/security-audit-001.png" style="width: 25em;" />
+  </div>
+  </section>
+
+  <section class="slide">
+  <h2>Security Audit</h2>
+  <div class="reference-link">
+    <a href="https://blog.mozilla.org/security/2017/07/18/web-service-audits-firefox-accounts/">https://blog.mozilla.org/security/2017/07/18/web-service-audits-firefox-accounts/</a>
+    <img src="./img/security-audit-conclusion.png" style="width: 25em;" />
+  </div>
+  </section>
+
+  <!--  -->
+
+  <section class="slide">
+  <h1>So is it Secure?</h1>
+  </section>
+
+  <section class="slide">
+  <h2>Well...</h2>
+  <table style="font-size: 0.8em;">
+  <tr><td><ul>
+  <li>HTML injection</li>
+  <li>Cross-site Scripting</li>
+  <li>ReDoS</li>
+  <li>Resource Exhaustion</li>
+  <li>Ineffective rate-limiting</li>
+  <li>Botnet attacks</li>
+  <li>Request splitting</li>
+  <li>...</li>
+  </ul></td><td><ul>
+  <li>Low-entropy key generation</li>
+  <li>Data disclosure</li>
+  <li>Database column truncation</li>
+  <li>Poison null bytes</li>
+  <li>Ineffective token expiry</li>
+  <li>Timing attacks</li>
+  <li>Server-side Request Forgery</li>
+  <li>...</li>
+  </ul></td></tr>
+  </table>
+  </section>
+
+  <!--  -->
+
+  <section class="slide" run-time-waypoint="12m">
+  <h1>The Case of the<br />Disappearing Emoji</h1>
+  </section>
+
+  <section class="slide">
+  <h2>The Case of the Disappearing Emoji</h2>
+  <div class="reference-link">
+    <a href="https://github.com/mozilla/fxa-content-server/issues/3208">https://github.com/mozilla/fxa-content-server/issues/3208</a>
+    <img src="./img/emoji-initial-report.png" style="width: 30em;" />
+  </div>
+  </section>
+
+  <section class="slide">
+  <h2>The Case of the Disappearing Emoji</h2>
+  <div class="reference-link">
+    <a href="https://github.com/mozilla/fxa-profile-server/issues/186">https://github.com/mozilla/fxa-profile-server/issues/186</a>
+    <img src="./img/emoji-discover-truncation.png" style="width: 30em;" />
+  </div>
+  </section>
+
+  <section class="slide">
+  <h2>The Case of the Disappearing Emoji</h2>
+  <div class="reference-link">
+    <a href="https://github.com/mozilla/fxa-profile-server/issues/186">https://github.com/mozilla/fxa-profile-server/issues/186</a>
+    <img src="./img/emoji-discover-truncation-2.png" style="width: 30em;" />
+  </div>
+  </section>
+
+  <section class="slide">
+  <h1>Turns out our database chokes on emoji</h1>
+  <h1>😞</h1>
+  </section>
+
+  <section class="slide">
+  <h1>Turns out our database truncates emoji</h1>
+  <h1>😱</h1>
+  </section>
+
+  <section class="slide">
+  <h2>The Case of the Disappearing Emoji</h2>
+  <div style="text-align:center; font-size: 1.3em;">
+    <p><a href="http://com💩pile.ws">http://com💩pile.ws</a></p>
+  </div>
+  </section>
+
+  <section class="slide">
+  <h2>The Case of the Disappearing Emoji</h2>
+  <div style="text-align:center; font-size: 1.3em;">
+    <p><a href="http://com💩pile.ws">http://com💩pile.ws</a></p>
+    <p>ryan@com💩pile.ws</p>
+  </div>
+  </section>
+
+  <section class="slide">
+  <h2>The Case of the Disappearing Emoji</h2>
+  <div style="text-align:center; font-size: 1.3em;">
+    <p><a href="http://com💩pile.ws">http://com💩pile.ws</a></p>
+    <p>ryan@com💩pile.ws</p>
+    <p>larrypage@gmail.com💩pile.ws</p>
+  </div>
+  </section>
+
+  <section class="slide">
+  <h1>Luckily did not affect the production email table</h1>
+  <h1>😅</h1>
+  </section>
+
+  <section class="slide">
+  <h2>Lessons Learned?</h2>
+  <ul>
+  <li>Be suspicious of unexpected behaviour<ul><li>Especially anything that's unexpectedly truncated!</li></ul></li>
+  <li>"Return with your shield, or on it"</li>
+  <li>Secure defaults matter at every layer of the stack</li>
+  </ul>
+  <div class="reference-link">
+    <a href="https://mathiasbynens.be/notes/mysql-utf8mb4">https://mathiasbynens.be/notes/mysql-utf8mb4</a>
+  </div>
+  </section>
+
+  <!--  -->
+
+  <section class="slide" run-time-waypoint="16m">
+  <h1>The Batch Upload Mixup</h1>
+  </section>
+
+  <section class="slide">
+  <h2>The Batch Upload Mixup</h2>
+  <div class="reference-link">
+    <a href="https://bugzilla.mozilla.org/show_bug.cgi?id=1343414">https://bugzilla.mozilla.org/show_bug.cgi?id=1343414</a>
+    <img src="./img/mixup-initial-report.png" />
+  </div>
+  </section>
+
+  <section class="slide">
+  <h2>The Batch Upload Mixup</h2>
+  <div class="reference-link">
+    <a href="https://bugzilla.mozilla.org/show_bug.cgi?id=1343414">https://bugzilla.mozilla.org/show_bug.cgi?id=1343414</a>
+    <img src="./img/mixup-hmac-error.png" />
+  </div>
+  </section>
+
+  <section class="slide">
+  <h2>The Batch Upload Mixup</h2>
+  <div class="reference-link">
+    <a href="https://bugzilla.mozilla.org/show_bug.cgi?id=1343414">https://bugzilla.mozilla.org/show_bug.cgi?id=1343414</a>
+    <img src="./img/mixup-wrong-keys.png" style="width: 30em;"/>
+  </div>
+  </section>
+
+  <section class="slide">
+  <h2>The Batch Upload Mixup</h2>
+  <div class="reference-link">
+    <a href="https://bugzilla.mozilla.org/show_bug.cgi?id=1343414">https://bugzilla.mozilla.org/show_bug.cgi?id=1343414</a>
+    <img src="./img/mixup-false-start.png" style="width: 25em;"/>
+  </div>
+  </section>
+
+  <section class="slide">
+  <h2>The Batch Upload Mixup</h2>
+  <div class="reference-link">
+    <a href="https://bugzilla.mozilla.org/show_bug.cgi?id=1345742">https://bugzilla.mozilla.org/show_bug.cgi?id=1345742</a>
+    <img src="./img/mixup-the-real-bug.png" style="width: 30em;" />
+  </div>
+  </section>
+
+  <section class="slide">
+  <h1>Luckily no user data was exposed</h1>
+  <h1>😅</h1>
+  </section>
+
+  <section class="slide">
+  <h2>Lessons Learned?</h2>
+  <ul>
+  <li>Be suspicious of unexpected failures<ul><li>Especially on trust boundaries!</li></ul></li>
+  <li>Defense in Depth<ul><li>Your own fallibility is part of the threat model</li></ul></li>
+  <li>Encryption can help you fail (at least partly!) closed</li>
+  </ul>
+  </section>
+
+  <!--  -->
+
+  <section class="slide" run-time-waypoint="21m">
+  <h1>The Password Re-use Attack</h1>
+  </section>
+
+  <section class="slide">
+  <h1>aka "The Incident"</h1>
+  </section>
+
+  <section class="slide">
+  <h2>The Password Re-use Attack</h2>
+  <div class="reference-link">
+    <img src="./img/botnet-probe.png" style="width: 30em;" />
+  </div>
+  </section>
+
+  <section class="slide">
+  <h2>The Password Re-use Attack</h2>
+  <div class="reference-link">
+    <img src="./img/botnet-probe-2.png" style="width: 30em;" />
+  </div>
+  </section>
+
+  <section class="slide">
+  <h2>The Password Re-use Attack</h2>
+  <div class="reference-link">
+    <img src="./img/botnet-rampup.png" style="width: 30em;"/>
+  </div>
+  </section>
+
+  <section class="slide">
+  <h2>The Password Re-use Attack</h2>
+  <div class="reference-link">
+    <img src="./img/botnet-refresh.png" style="width: 30em;"/>
+  </div>
+  </section>
+
+  <section class="slide">
+  <h2>The Password Re-use Attack</h2>
+  <div class="reference-link">
+    <a style="font-size: 0.7em" href="https://blog.mozilla.org/services/2016/04/09/stolen-passwords-used-to-break-into-firefox-accounts/">https://blog.mozilla.org/services/2016/04/09/stolen-passwords-used-to-break-into-firefox-accounts/</a>
+    <img src="./img/botnet-blog-post.png" style="width: 25em;"/>
+  </div>
+  </section>
+
+  <section class="slide">
+  <h2>Lessons Learned?</h2>
+  <ul>
+  <li>Be suspicious of unexpected traffic patterns<ul><li>Even unexpected patterns of success!</li></ul></li>
+  <li>Keep your threat model up to date</li>
+  <li>Operational agility makes a huge difference</li>
+  <li>Take care of people<ul><li>Your users</li><li>Your team</li></ul></li>
+  </ul>
+  </section>
+
+  <section class="slide">
+  <br />
+  <div class="reference-link">
+    <a style="font-size: 1.2em" href="https://haveibeenpwned.com/">https://haveibeenpwned.com/</a>
+    <img src="./img/hibp.png" style="width: 30em"/>
+  </div>
+  </section>
+
+  <!--  -->
+
+  <section class="slide">
+  <h1>"Be suspicious of unexpected X"</h1>
+  </section>
+
+  <section class="slide" run-time-waypoint="25m">
+  <h1>So is it Secure?</h1>
+  </section>
+
+  <section class="slide">
+  <h1>Security is a Practice</h1>
+  <ul>
+  <li>Informed by theory, of course</li>
+  <li>But IMHO, mostly learned by failing<ul><li>or by watching others fail</li><li>or at least, by having close calls</li></ul></li>
+  <li>So let's see some more in action!</li>
+  </ul>
+  </section>
+
+  <section class="slide">
+  <h2>A demo app, with demo problems</h2>
+  <div style="text-align: center">
+    <a href='https://rfkelly.dev.lcip.org/notes-demo/'>https://rfkelly.dev.lcip.org/notes-demo/</a></p>
+  </a>
+  </section>
+
+  <!--  -->
+
+  <section class="slide">
+  <h1 style='margin-bottom: 0.3em'>Thanks!</h1>
+  <div style="text-align: center; margin-top: 0.3em; padding-top: 0.3em">
+    <p>https://github.com/mozilla/fxa/</p>
+    <p>https://fxa.readthedocs.io/</p>
+    <br/>
+    <p>rfkelly@mozilla.com</p>
+    <p>https://rfk.id.au/</p>
+  </div>
+  </section>
+
+  <!--  -->
+</div>
+</body>
